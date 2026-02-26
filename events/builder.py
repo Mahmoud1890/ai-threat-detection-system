@@ -1,6 +1,8 @@
 import json
+import os
 import socket
 import platform
+import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -12,14 +14,23 @@ from .schema import (
     REQUIRED_HOST_KEYS,
 )
 
+# Module-level lock — shared by every caller that imports write_jsonl.
+# Both file_access_monitor and process_exec_logger write to the same
+# events.jsonl, so the lock must live here (not in either monitor) to
+# actually be shared across both.
+_write_lock = threading.Lock()
+
+
 def _now_ts_ns() -> int:
     return time.time_ns()
+
 
 def _get_host_info() -> Dict[str, Any]:
     return {
         "hostname": socket.gethostname(),
         "kernel_release": platform.release(),
     }
+
 
 def validate_event(evt: Dict[str, Any]) -> None:
     missing_top = REQUIRED_TOP_LEVEL_KEYS - set(evt.keys())
@@ -49,6 +60,7 @@ def validate_event(evt: Dict[str, Any]) -> None:
     if not isinstance(evt["data"], dict):
         raise ValueError("data must be dict")
 
+
 def build_event(
     event_type: str,
     process: Dict[str, Any],
@@ -73,6 +85,45 @@ def build_event(
     validate_event(evt)
     return evt
 
+
 def write_jsonl(path: str, evt: Dict[str, Any]) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(evt, separators=(",", ":"), ensure_ascii=False) + "\n")
+    """Append a single event as a JSON line. Thread-safe."""
+    with _write_lock:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(evt, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def safe_read_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def get_ppid_uid(pid: int) -> tuple[int, int]:
+    """Read PPid and Uid from /proc/<pid>/status.
+
+    Race condition: process may exit before we read /proc. Returns (0, 0)
+    on failure — callers should treat 0 as 'unknown', not root.
+    """
+    status = safe_read_text(f"/proc/{pid}/status")
+    ppid = 0
+    uid = 0
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                ppid = int(parts[1])
+        elif line.startswith("Uid:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                uid = int(parts[1])
+    return ppid, uid
+
+
+def get_exe_path(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except Exception:
+        return ""
