@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from bcc import BPF
-from datetime import datetime
 import os
 import signal
 
-LOG_PATH = "data/file_events.log"
+from events.builder import build_event, write_jsonl
+
+OUT_JSONL = "data/raw/events.jsonl"
 
 BPF_PROGRAM = r"""
 #include <uapi/linux/ptrace.h>
@@ -45,14 +46,41 @@ int trace_open(struct pt_regs *ctx, const char __user *filename, int flags, umod
 running = True
 
 def ensure_data_dir():
-    os.makedirs("data", exist_ok=True)
-
-def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+    os.makedirs("data/raw", exist_ok=True)
 
 def stop(signum, frame):
     global running
     running = False
+
+def safe_read_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+def get_ppid_uid(pid: int) -> tuple[int, int]:
+    # Reads /proc/<pid>/status to extract PPid and Uid
+    status = safe_read_text(f"/proc/{pid}/status")
+    ppid = 0
+    uid = 0
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                ppid = int(parts[1])
+        elif line.startswith("Uid:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                uid = int(parts[1])
+    return ppid, uid
+
+def get_exe_path(pid: int) -> str:
+    # /proc/<pid>/exe is a symlink to the actual executable path
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except Exception:
+        return ""
 
 def main():
     ensure_data_dir()
@@ -68,22 +96,45 @@ def main():
     except Exception:
         pass
 
-    with open(LOG_PATH, "a", buffering=1) as f:
-        def handle_event(cpu, data, size):
-            ev = b["events"].event(data)
-            line = f"{now_iso()} pid={ev.pid} comm={ev.comm.decode(errors='replace')} file={ev.fname.decode(errors='replace')}\n"
-            f.write(line)
+    def handle_event(cpu, data, size):
+        ev = b["events"].event(data)
 
-        b["events"].open_perf_buffer(handle_event)
+        pid = int(ev.pid)
+        comm = ev.comm.decode(errors="replace")
+        path = ev.fname.decode(errors="replace")
 
-        print(f"[+] File Access Monitor running. Logging to {LOG_PATH}")
-        print("[+] Press Ctrl+C to stop.")
+        ppid, uid = get_ppid_uid(pid)
+        exe = get_exe_path(pid)
 
-        signal.signal(signal.SIGINT, stop)
-        signal.signal(signal.SIGTERM, stop)
+        process = {
+            "pid": pid,
+            "ppid": ppid,
+            "uid": uid,
+            "comm": comm,
+            "exe": exe,
+        }
 
-        while running:
-            b.perf_buffer_poll(timeout=1000)
+        evt = build_event(
+            event_type="file_open",
+            process=process,
+            data={
+                "path": path,
+                "kernel_ts_ns": int(ev.ts_ns),
+            },
+        )
+
+        write_jsonl(OUT_JSONL, evt)
+
+    b["events"].open_perf_buffer(handle_event)
+
+    print(f"[+] File Access Monitor running. Writing JSONL to {OUT_JSONL}")
+    print("[+] Press Ctrl+C to stop.")
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+
+    while running:
+        b.perf_buffer_poll(timeout=1000)
 
     print("[+] Stopped.")
 
