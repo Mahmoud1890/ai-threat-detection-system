@@ -1,23 +1,42 @@
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # AI Threat Detection System — Python dependencies
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 #
-# SYSTEM DEPENDENCY (install via apt, NOT pip):
+# ── SYSTEM DEPENDENCY — install via apt, NOT pip ─────────────────────────────
 #
 #   sudo apt install python3-bcc
 #
-# BCC (BPF Compiler Collection) ships as a distro package because it must
-# match the running kernel version. The PyPI 'bcc' package is unrelated.
-# See: https://github.com/iovisor/bcc/blob/master/INSTALL.md
+# BCC (BPF Compiler Collection) is the library that lets Python load eBPF
+# programs into the Linux kernel. It must be installed as a system package
+# because it wraps compiled C libraries that are tightly coupled to the
+# running kernel version. You cannot install it with pip.
 #
-# All other runtime dependencies below are Python standard library and require
-# no pip install. They are listed here for documentation purposes only.
+# There is a package called 'bcc' on PyPI but it is completely unrelated —
+# installing it will not give you eBPF support. Use apt only.
 #
-# stdlib used:
-#   json, os, platform, signal, socket, struct, threading, time, uuid
+# Official install guide: https://github.com/iovisor/bcc/blob/master/INSTALL.md
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# Development / testing (install with: pip install -r requirements.txt)
-# ─────────────────────────────────────────────────────────────────────────────
-pytest>=8.0
-pytest-timeout>=2.3
+#
+# ── STANDARD LIBRARY (no install needed) ─────────────────────────────────────
+#
+# All other runtime dependencies are part of Python's standard library and
+# are available in any Python 3.8+ installation without pip install:
+#
+#   json        — serialise events to JSON strings
+#   os          — file paths, makedirs, O_RDONLY/O_WRONLY flag constants
+#   platform    — read kernel version for host metadata in events
+#   signal      — register Ctrl+C handlers in sensors
+#   socket      — convert raw IP bytes to dotted-decimal strings, gethostname
+#   struct      — pack/unpack raw binary data from the BPF perf buffer
+#   threading   — module-level write lock in events/builder.py
+#   time        — generate nanosecond timestamps
+#   uuid        — generate unique event_id for every event
+#
+#
+# ── DEVELOPMENT DEPENDENCIES (install with: pip install -r requirements.txt) ──
+#
+# These are only needed when writing and running tests for the detection
+# engine (Phase 2). They are not required to run the sensors.
+#
+pytest>=8.0          # test runner — runs all test_*.py files
+pytest-timeout>=2.3  # adds per-test timeouts so a hung test doesn't block CI
