@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Threat Detection System — Python dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# SYSTEM DEPENDENCY (install via apt, NOT pip):
+#
+#   sudo apt install python3-bcc
+#
+# BCC (BPF Compiler Collection) ships as a distro package because it must
+# match the running kernel version. The PyPI 'bcc' package is unrelated.
+# See: https://github.com/iovisor/bcc/blob/master/INSTALL.md
+#
+# All other runtime dependencies below are Python standard library and require
+# no pip install. They are listed here for documentation purposes only.
+#
+# stdlib used:
+#   json, os, platform, signal, socket, struct, threading, time, uuid
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Development / testing (install with: pip install -r requirements.txt)
+# ─────────────────────────────────────────────────────────────────────────────
+pytest>=8.0
+pytest-timeout>=2.3

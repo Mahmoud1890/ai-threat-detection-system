@@ -20,6 +20,37 @@ IGNORED_PATH_PREFIXES = (
     "/tmp/.X",
 )
 
+# ---------------------------------------------------------------------------
+# Open flags decoder — converts the raw integer flags to a human-readable
+# list. Useful in detection rules: O_WRONLY|O_CREAT|O_TRUNC on /etc/cron.d
+# is very different from O_RDONLY on the same path.
+# ---------------------------------------------------------------------------
+_ACCESS_MODE = {
+    os.O_RDONLY: "O_RDONLY",
+    os.O_WRONLY: "O_WRONLY",
+    os.O_RDWR:   "O_RDWR",
+}
+
+_FLAG_BITS = [
+    (os.O_CREAT,     "O_CREAT"),
+    (os.O_EXCL,      "O_EXCL"),
+    (os.O_TRUNC,     "O_TRUNC"),
+    (os.O_APPEND,    "O_APPEND"),
+    (os.O_NONBLOCK,  "O_NONBLOCK"),
+    (os.O_DSYNC,     "O_DSYNC"),
+    (os.O_DIRECTORY, "O_DIRECTORY"),
+    (os.O_NOFOLLOW,  "O_NOFOLLOW"),
+    (os.O_CLOEXEC,   "O_CLOEXEC"),
+]
+
+
+def decode_open_flags(flags: int) -> list:
+    result = [_ACCESS_MODE.get(flags & os.O_ACCMODE, "O_RDONLY")]
+    for bit, name in _FLAG_BITS:
+        if flags & bit:
+            result.append(name)
+    return result
+
 
 BPF_PROGRAM = r"""
 #include <uapi/linux/ptrace.h>
@@ -30,6 +61,7 @@ BPF_PROGRAM = r"""
 struct event_t {
     u64 ts_ns;
     u32 pid;
+    u32 flags;
     char comm[TASK_COMM_LEN];
     char fname[FNAME_LEN];
 };
@@ -38,8 +70,9 @@ BPF_PERF_OUTPUT(events);
 
 int trace_openat(struct pt_regs *ctx, int dfd, const char __user *filename, int flags, umode_t mode) {
     struct event_t ev = {};
-    ev.ts_ns = bpf_ktime_get_ns();
-    ev.pid   = bpf_get_current_pid_tgid() >> 32;
+    ev.ts_ns  = bpf_ktime_get_ns();
+    ev.pid    = bpf_get_current_pid_tgid() >> 32;
+    ev.flags  = flags;
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
     bpf_probe_read_user_str(&ev.fname, sizeof(ev.fname), filename);
     events.perf_submit(ctx, &ev, sizeof(ev));
@@ -48,8 +81,9 @@ int trace_openat(struct pt_regs *ctx, int dfd, const char __user *filename, int 
 
 int trace_open(struct pt_regs *ctx, const char __user *filename, int flags, umode_t mode) {
     struct event_t ev = {};
-    ev.ts_ns = bpf_ktime_get_ns();
-    ev.pid   = bpf_get_current_pid_tgid() >> 32;
+    ev.ts_ns  = bpf_ktime_get_ns();
+    ev.pid    = bpf_get_current_pid_tgid() >> 32;
+    ev.flags  = flags;
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
     bpf_probe_read_user_str(&ev.fname, sizeof(ev.fname), filename);
     events.perf_submit(ctx, &ev, sizeof(ev));
@@ -112,11 +146,16 @@ def main():
             "exe":  exe,
         }
 
+        flags_raw  = int(ev.flags)
+        flags_list = decode_open_flags(flags_raw)
+
         evt = build_event(
             event_type="file_open",
             process=process,
             data={
-                "path": path,
+                "path":         path,
+                "flags":        flags_list,
+                "flags_raw":    flags_raw,
                 "kernel_ts_ns": int(ev.ts_ns),
             },
         )
