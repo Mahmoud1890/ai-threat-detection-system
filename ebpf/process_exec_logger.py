@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 from bcc import BPF
 import os
 import signal
@@ -7,9 +8,6 @@ from events.builder import build_event, write_jsonl, safe_read_text, get_ppid_ui
 
 OUT_JSONL = "data/raw/events.jsonl"
 
-# Refactored: uses BPF_PERF_OUTPUT ring buffer instead of bpf_trace_printk.
-# This avoids the global debug pipe, eliminates fragile string parsing,
-# and matches the pattern used in file_access_monitor.py.
 BPF_PROGRAM = r"""
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
@@ -48,9 +46,8 @@ def stop(signum, frame):
     running = False
 
 
-
 def main():
-    ensure_data_dir()  # creates data/raw/ if it doesn't exist yet
+    ensure_data_dir()
 
     b = BPF(text=BPF_PROGRAM)
 
@@ -63,12 +60,12 @@ def main():
     def handle_event(cpu, data, size):
         ev = b["exec_events"].event(data)
 
-        pid       = int(ev.pid)
-        comm      = ev.comm.decode(errors="replace")
-        filename  = ev.filename.decode(errors="replace")
+        pid      = int(ev.pid)
+        comm     = ev.comm.decode(errors="replace")
+        filename = ev.filename.decode(errors="replace")
 
         ppid, uid = get_ppid_uid(pid)
-        exe       = get_exe_path(pid) or filename  # fall back to execve arg if /proc race
+        exe       = get_exe_path(pid) or filename
 
         process = {
             "pid":  pid,
