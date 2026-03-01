@@ -207,6 +207,10 @@ source .venv/bin/activate
 
 Packages stay installed permanently — activation just tells the shell to use `.venv/bin/` instead of the system Python.
 
+**Why `source` and not `cd` or `./`?**
+
+`cd` only changes your working directory — it has nothing to do with running scripts. `./venv/bin/activate` would run `activate` as a child process, which exits immediately, and any environment changes it makes (like updating `PATH`) die with it. `source` (or equivalently `. file`) runs the script directly in your current shell session, so its changes — pointing `PATH` to `.venv/bin/`, updating the prompt — actually stick. This is why `activate` must always be sourced and never just executed.
+
 ---
 
 ## Running the Sensors
