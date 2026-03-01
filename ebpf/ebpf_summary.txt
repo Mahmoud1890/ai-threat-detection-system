@@ -1,0 +1,207 @@
+================================================================
+eBPF THREAT DETECTION SENSORS — PROJECT SUMMARY
+================================================================
+
+OVERVIEW
+--------
+These three sensors form the data collection layer of the threat
+detection system. They sit at the kernel level and silently observe
+everything happening on the system — what processes run, what files
+they touch, and where they connect. All three write to the same
+data/raw/events.jsonl file, building a unified stream of structured
+events for the AI/detection layer above.
+
+
+================================================================
+THE THREE FILES
+================================================================
+
+----------------------------------------------------------------
+1. process_exec_logger.py — What ran?
+----------------------------------------------------------------
+Captures every process execution on the system by hooking execve,
+the syscall the kernel uses every time a program is launched.
+
+BPF Program:
+  - Uses TRACEPOINT_PROBE(syscalls, sys_enter_execve)
+    Auto-attaches on load, no manual attach call needed.
+  - Captures: ts_ns, pid, comm (parent process name),
+    filename (binary being executed)
+  - Reads filename from userspace with bpf_probe_read_user_str
+
+Userspace:
+  - get_ppid_uid(pid): enriches with parent PID and user ID
+  - get_exe_path(pid) or filename: the "or filename" fallback is
+    unique to this sensor. Because execve replaces the process
+    image, /proc/<pid>/exe may already point to the new binary or
+    the process may have exited by the time userspace runs. The
+    kernel-captured filename is the reliable fallback.
+  - Emits: process_exec events
+
+What it detects:
+  Shells spawned from web servers (webshells), binaries executed
+  from /tmp/ or /dev/shm/, privilege escalation tools, scripting
+  engines launched with suspicious arguments.
+
+
+----------------------------------------------------------------
+2. file_access_monitor.py — What was touched?
+----------------------------------------------------------------
+Captures every file open attempt system-wide by hooking openat
+(and legacy open).
+
+BPF Program:
+  - Uses kprobes on __x64_sys_openat and __x64_sys_open
+  - Two handlers (trace_openat, trace_open) with identical bodies.
+    Only difference: trace_openat has an extra dfd parameter
+    (directory file descriptor) which is captured but never stored.
+  - Captures: ts_ns, pid, comm, fname, flags
+
+Userspace:
+  - is_noise(path): drops /proc/, /sys/, /dev/, /run/, /tmp/.font,
+    /tmp/.X early to prevent flooding
+  - decode_open_flags(flags): converts raw integer into
+    human-readable list like ["O_WRONLY", "O_CREAT", "O_TRUNC"]
+  - Emits: file_open events with both flags (decoded list) and
+    flags_raw (integer, for lossless reproduction)
+
+What it detects:
+  Password file reads, log tampering, files dropped in suspicious
+  locations, ransomware patterns (rapid O_WRONLY + O_TRUNC across
+  many files).
+
+
+----------------------------------------------------------------
+3. network_monitor.py — Who connected where?
+----------------------------------------------------------------
+Captures outbound TCP connections by hooking tcp_v4_connect and
+tcp_v6_connect.
+
+BPF Program:
+  - Uses kprobes + kretprobes — two probes per protocol
+    (entry + return)
+  - Two separate event structs: ipv4_event_t and ipv6_event_t
+    (IPv6 needs 16-byte address arrays instead of 4-byte)
+  - BPF_HASH(currsock, u32, struct sock *): bridges the two probes,
+    stashing the socket pointer at entry keyed by TID
+  - Entry probes: just save the sock * pointer, nothing else
+  - Return probes: retrieve the pointer, check success, then read
+    IPs and ports from the now-populated socket struct
+  - Must traverse struct sock -> struct inet_sock to access
+    inet_sport (source port)
+  - All kernel struct reads done with bpf_probe_read since they
+    are kernel memory pointers
+
+Userspace:
+  - is_loopback(ip): optionally filters 127.x.x.x and ::1
+  - socket.inet_ntop + socket.ntohs: converts raw bytes and
+    network byte order integers into readable IPs and port numbers
+  - Emits: net_connect events
+
+What it detects:
+  Malware phoning home, reverse shells, C2 communication,
+  data exfiltration.
+
+
+================================================================
+KEY DESIGN DECISIONS
+================================================================
+
+----------------------------------------------------------------
+Why two probes in network, one in file/exec?
+----------------------------------------------------------------
+  process_exec  | 1 tracepoint | Everything needed is in syscall
+                |              | args at entry. Don't care if
+                |              | execve succeeded.
+  --------------|--------------|--------------------------------
+  file_access   | 1 kprobe     | Filename and flags are in syscall
+                |              | args at entry. Logs the attempt,
+                |              | not the outcome.
+  --------------|--------------|--------------------------------
+  network       | 2 probes     | Source port doesn't exist at
+                |              | entry. Need return value to
+                |              | confirm connection succeeded.
+
+The fundamental rule: if you need the return value or data that
+only exists after the kernel processes the call, you need two
+probes.
+
+
+----------------------------------------------------------------
+Why tracepoint in process_exec but kprobes in file_access?
+----------------------------------------------------------------
+Tracepoints are stable kernel ABI — guaranteed to exist with a
+consistent interface across kernel versions. Auto-attach via the
+TRACEPOINT_PROBE macro.
+
+Kprobes attach to internal kernel function names like
+__x64_sys_openat which can change between versions — hence the
+try/except around the legacy open attach.
+
+execve has a stable tracepoint so it was used. file_access could
+have also used syscalls:sys_enter_openat as a tracepoint and it
+would have been more robust. The kprobe was chosen because two
+kprobes can share similar handler functions, making it slightly
+more natural to hook both openat and open the same way.
+
+
+----------------------------------------------------------------
+Why does struct sock make network so much more complex?
+----------------------------------------------------------------
+For file and exec, the data you need (filename, flags) is passed
+directly as syscall arguments — it's right there at entry.
+
+For network, IPs and ports are not syscall arguments at the
+kernel-internal level. They live inside the sock object in kernel
+memory, only fully populated after the connect is processed.
+You have to:
+  1. Save the sock * pointer at entry via BPF_HASH
+  2. Wait for the return
+  3. Dereference deep kernel structs with bpf_probe_read
+  4. Cast sock * to inet_sock * to reach the source port field
+
+
+----------------------------------------------------------------
+Why bpf_probe_read_user_str for filenames?
+----------------------------------------------------------------
+Filenames are pointers into userspace memory. eBPF runs in kernel
+context and cannot directly dereference userspace pointers — the
+verifier would reject it. bpf_probe_read_user_str safely crosses
+the kernel/userspace boundary, null-terminates the result, and
+handles page faults gracefully instead of crashing.
+
+
+----------------------------------------------------------------
+Why bpf_get_current_pid_tgid() >> 32?
+----------------------------------------------------------------
+The function returns a packed 64-bit value:
+  [ TGID (upper 32 bits) | TID (lower 32 bits) ]
+
+Shifting right by 32 extracts the TGID, which is what userspace
+calls the PID. The lower TID is only relevant for distinguishing
+individual threads within a process, which none of these sensors
+need.
+
+
+================================================================
+HOW THEY COME TOGETHER
+================================================================
+
+All three sensors write to the same JSONL file with a consistent
+event structure built by build_event(). Each event has:
+  - A type:    process_exec, file_open, or net_connect
+  - A process: pid, ppid, uid, comm, exe
+  - A data:    event-specific fields
+  - A kernel timestamp for precise ordering
+
+This means the detection layer above can correlate across all
+three by pid. A complete attack chain would look like:
+
+  process_exec -> pid 1234 executes /tmp/malware
+  file_open    -> pid 1234 opens /etc/shadow (O_RDONLY)
+  net_connect  -> pid 1234 connects to 45.33.32.156:443
+
+Three separate sensors, one unified picture. That is the purpose
+of the shared OUT_JSONL, the shared build_event structure, and
+the shared process enrichment helpers — everything is designed to
+be correlated, not just collected.
