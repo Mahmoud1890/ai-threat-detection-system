@@ -12,6 +12,8 @@ OUT_JSONL = "data/raw/events.jsonl"
 IGNORE_LOOPBACK = True
 
 BPF_PROGRAM = r"""
+struct bpf_wq { __u64 __opaque[2]; };
+
 #include <uapi/linux/ptrace.h>
 #include <net/sock.h>
 #include <net/inet_sock.h>

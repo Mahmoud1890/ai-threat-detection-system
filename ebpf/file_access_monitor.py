@@ -15,6 +15,7 @@ IGNORED_PATH_PREFIXES = (
     "/run/",
     "/tmp/.font",
     "/tmp/.X",
+    "data/raw/",
 )
 
 _ACCESS_MODE = {
