@@ -143,6 +143,16 @@ Collected from a real AWS honeypot. 763k labeled training rows, 188k validation 
 
 **Approach:** Supervised — train on BETH `sus` labels, evaluate on test set with `evil` labels. Model learns known attack patterns from real honeypot data. Engineer feedback stored in PostgreSQL and used for periodic retraining (active learning loop).
 
+**Generating the model:**
+
+The trained model artifact (`models/detector.joblib`) is not committed to the repository. To generate it locally:
+
+1. Download the BETH dataset from Kaggle (`katehighnam/beth-dataset`) and place the CSV files in `data/raw/`
+2. Activate the virtual environment: `source .venv/bin/activate`
+3. Run the training script: `python ml/train.py`
+
+The trained model will be saved to `models/detector.joblib`.
+
 ### Phase 3 — Claude API Triage Engine
 Pass flagged event clusters to the Claude API as structured context. Claude generates:
 - Plain-English analyst report
@@ -196,6 +206,10 @@ ai-threat-detection-system/
 ├── events/
 │   ├── schema.py                # event schema + required key constants
 │   └── builder.py               # normalization, validation, JSONL write
+├── ml/
+│   └── train.py                 # trains anomaly detector on BETH dataset
+├── models/
+│   └── detector.joblib          # trained model (not committed — run ml/train.py)
 └── data/
     └── raw/
         └── events.jsonl         # unified behavioral event log
