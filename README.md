@@ -119,6 +119,30 @@ Score behavioral event clusters from `events.jsonl` to surface:
 - Unexpected file access by unprivileged processes
 - Anomalous outbound connections
 
+**Dataset: BETH (Behaviour and Event Tracing for Hosts)**
+Collected from a real AWS honeypot. 763k labeled training rows, 188k validation rows, 188k test rows.
+
+| Column | Type | Description |
+|---|---|---|
+| `timestamp` | float | Seconds since reference point |
+| `processId` | int | PID of the process |
+| `threadId` | int | Thread ID |
+| `parentProcessId` | int | PPID of the process |
+| `userId` | int | UID of the process |
+| `mountNamespace` | int | Linux mount namespace ID |
+| `processName` | str | Process name (equivalent to `comm`) |
+| `hostName` | str | Machine hostname |
+| `eventId` | int | Numeric syscall ID |
+| `eventName` | str | Syscall name (`close`, `openat`, `kill`, etc.) |
+| `stackAddresses` | list | Memory addresses on the call stack |
+| `argsNum` | int | Number of syscall arguments |
+| `returnValue` | int | Syscall return value (negative = error) |
+| `args` | str | Full syscall arguments |
+| `sus` | int | Label: 1 = suspicious |
+| `evil` | int | Label: 1 = malicious |
+
+**Approach:** Supervised — train on BETH `sus` labels, evaluate on test set with `evil` labels. Model learns known attack patterns from real honeypot data. Engineer feedback stored in PostgreSQL and used for periodic retraining (active learning loop).
+
 ### Phase 3 — Claude API Triage Engine
 Pass flagged event clusters to the Claude API as structured context. Claude generates:
 - Plain-English analyst report

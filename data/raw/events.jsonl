@@ -1,1 +1,0 @@
-{"version":"1.0","event_id":"77e2a5e5-79c2-4980-94a5-c63e0f542e2c","event_type":"test_event","ts_ns":1772037530975072795,"host":{"hostname":"mahmoud-amin-VirtualBox","kernel_release":"6.14.0-37-generic"},"process":{"pid":123,"ppid":1,"uid":1000,"comm":"bash","exe":"/usr/bin/bash"},"data":{"example":"value"}}
